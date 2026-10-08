@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to attach zip to (e.g., v0.2.0)'
+        description: 'Fork release tag (e.g., waverly-v0.23.1)'
         required: true
 
 permissions:
@@ -22,14 +22,18 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Get version from tag
-        id: get_version
+      - name: Verify fork tag and source version
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "VERSION=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
+          python3 - <<'PYTHON'
+          import os, pathlib, re
+          tag = os.environ["RELEASE_TAG"]
+          version = re.search(r'version\s*=\s*"([^"]+)"', pathlib.Path("_meta.lua").read_text()).group(1)
+          assert tag == "waverly-v" + version, "Release tag must match the fork version in _meta.lua"
+          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version), "Invalid release version"
+          assert 'REPO_OWNER = "waverlylua"' in pathlib.Path("koassistant_constants.lua").read_text(), "Wrong update channel"
+          PYTHON
 
       - name: Create plugin directory structure
         run: |

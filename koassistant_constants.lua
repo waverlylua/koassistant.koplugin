@@ -94,12 +94,16 @@ end
 -- Used for update checking and HTTP headers (OpenRouter)
 -- Single source of truth for repository location
 Constants.GITHUB = {
-    REPO_OWNER = "zeeyado",
+    REPO_OWNER = "waverlylua",
     REPO_NAME = "koassistant.koplugin",
-    URL = "https://github.com/zeeyado/koassistant.koplugin",
-    -- per_page=5: the checker only needs the newest releases; the default (30, with
-    -- full markdown bodies) is hundreds of KB json.decode'd on the UI thread
-    API_URL = "https://api.github.com/repos/zeeyado/koassistant.koplugin/releases?per_page=5",
+    URL = "https://github.com/waverlylua/koassistant.koplugin",
+    -- Keep enough candidates to skip incomplete/prerelease entries. The release
+    -- selector checks versions rather than relying on GitHub's creation order.
+    API_URL = "https://api.github.com/repos/waverlylua/koassistant.koplugin/releases?per_page=30",
+    -- Fork tags deliberately cannot match inherited upstream vX.Y.Z releases.
+    TAG_PREFIX = "waverly-v",
+    ASSET_NAME = "koassistant.koplugin.zip",
+    MAX_ASSET_BYTES = 64 * 1024 * 1024,
 }
 
 -- Text extraction defaults (single source of truth)

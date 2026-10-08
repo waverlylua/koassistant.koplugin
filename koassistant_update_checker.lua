@@ -2,6 +2,7 @@ local json = require("json")
 local logger = require("koassistant_logger")
 local Constants = require("koassistant_constants")
 local Registry = require("koassistant_storage_registry")
+local ReleaseChannel = require("koassistant_release_channel")
 local ffi = require("ffi")
 local ffiutil = require("ffi/util")
 local lfs = require("libs/libkoreader-lfs")
@@ -506,6 +507,14 @@ local function ensureMarkdownViewer()
 end
 
 local UpdateChecker = {}
+
+-- Set before asynchronous download and held after installation until restart.
+-- This prevents stale dialogs from installing twice with old code still loaded.
+local function updateBusy()
+    if _G.KOAssistantStreaming then return true end
+    local runtime = package.loaded["koassistant_question_runtime"]
+    return runtime and runtime.isBusy and runtime.isBusy() or false
+end
 
 -- Pending update info (deferred if streaming is active)
 UpdateChecker.pending_update = nil
@@ -1037,12 +1046,11 @@ local function fetchWithAbsoluteTimeout(url, timeout, callback)
         local ok, err = pcall(function()
             if IS_MACOS and url:sub(1, 8) == "https://" then
                 -- macOS: use raw SSL to bypass http.request which hangs after fork
-                local BaseHandler = require("koassistant_api.base")
                 local parsed_host = url:match("https://([^/:]+)")
                 local parsed_port = tonumber(url:match("https://[^/:]+:(%d+)")) or 443
                 local parsed_path = url:match("https://[^/]+(.*)") or "/"
 
-                local ssl_sock = BaseHandler.connectSSLInSubprocess(resolved_ip, parsed_host, parsed_port, 8)
+                local ssl_sock = assert(require("koassistant_update_tls").connect(resolved_ip, parsed_host, parsed_port, 8))
                 local req_headers = {
                     ["Accept"] = "application/vnd.github.v3+json",
                     ["User-Agent"] = "KOReader-KOAssistant-Plugin",
@@ -1139,16 +1147,13 @@ local function fetchWithAbsoluteTimeout(url, timeout, callback)
 
                 ssl_sock:close()
             else
-                -- Non-macOS: use standard http.request path
-                local http = require("socket.http")
+                -- Use authenticated TLS; the shared provider transport is unchanged.
+                local http = require("koassistant_update_tls")
                 local subprocess_ltn12 = require("ltn12")
 
                 local su_ok, socketutil = pcall(require, "socketutil")
                 if su_ok and socketutil then
                     socketutil:set_timeout(8, 15)  -- 8s block, 15s total
-                else
-                    local subprocess_https = require("ssl.https")
-                    subprocess_https.TIMEOUT = 8
                 end
 
                 local pipe_w = wrap_fd(child_write_fd)
@@ -1163,10 +1168,10 @@ local function fetchWithAbsoluteTimeout(url, timeout, callback)
                 }
 
                 local req_ok, code = pcall(function()
-                    return select(2, http.request(request))
+                    return select(2, http.request(request, 8))
                 end)
 
-                if not req_ok or (code and code ~= 200) then
+                if not req_ok or tonumber(code) ~= 200 then
                     ffiutil.writeToFD(child_write_fd, "\n__UPDATE_CHECK_ERROR__:" .. tostring(code or "connection failed"))
                 end
             end
@@ -1268,7 +1273,21 @@ end
 --- @param url string URL to download
 --- @param dest_path string Path to write the downloaded file
 --- @param callback function Called with (success, error_msg_or_nil)
-local function downloadFile(url, dest_path, callback)
+local function downloadFile(url, dest_path, callback, redirect_state)
+    local Redirects = require("koassistant_download_redirects")
+    if not Redirects.isAllowedURL(url) then
+        callback(false, _("Unsafe download URL"))
+        return
+    end
+    redirect_state = redirect_state or {
+        hops = 0, seen = { [url] = true }, deadline = os.time() + DOWNLOAD_TIMEOUT,
+    }
+    local remaining_timeout = redirect_state.deadline - os.time()
+    if remaining_timeout <= 0 then
+        os.remove(dest_path)
+        callback(false, _("Download timed out"))
+        return
+    end
     -- Pre-resolve DNS in parent process (macOS only)
     local resolved_ip
     if IS_MACOS and url:sub(1, 8) == "https://" then
@@ -1326,7 +1345,7 @@ local function downloadFile(url, dest_path, callback)
     end
 
     -- Set up absolute timeout watchdog
-    timeout_task = UIManager:scheduleIn(DOWNLOAD_TIMEOUT, function()
+    timeout_task = UIManager:scheduleIn(remaining_timeout, function()
         if not completed then
             logger.info("UpdateChecker: download timeout reached, killing subprocess")
             cleanup()
@@ -1342,12 +1361,11 @@ local function downloadFile(url, dest_path, callback)
         local ok, sub_err = pcall(function()
             if IS_MACOS and url:sub(1, 8) == "https://" then
                 -- macOS: use raw SSL to bypass http.request which hangs after fork
-                local BaseHandler = require("koassistant_api.base")
                 local parsed_host = url:match("https://([^/:]+)")
                 local parsed_port = tonumber(url:match("https://[^/:]+:(%d+)")) or 443
                 local parsed_path = url:match("https://[^/]+(.*)") or "/"
 
-                local ssl_sock = BaseHandler.connectSSLInSubprocess(resolved_ip, parsed_host, parsed_port, DOWNLOAD_STALL_TIMEOUT)
+                local ssl_sock = assert(require("koassistant_update_tls").connect(resolved_ip, parsed_host, parsed_port, DOWNLOAD_STALL_TIMEOUT))
 
                 -- Send GET request
                 local req_lines = {
@@ -1357,7 +1375,12 @@ local function downloadFile(url, dest_path, callback)
                     "Connection: close",
                     "", "",
                 }
-                ssl_sock:send(table.concat(req_lines, "\r\n"))
+                local request = table.concat(req_lines, "\r\n")
+                local sent = ssl_sock:send(request)
+                if sent ~= #request then
+                    ssl_sock:close()
+                    error("Failed to send download request")
+                end
 
                 -- Read status line
                 local status_line = ssl_sock:receive("*l")
@@ -1366,17 +1389,31 @@ local function downloadFile(url, dest_path, callback)
                 -- Read response headers, detect chunked TE and content-length
                 local is_chunked = false
                 local content_length = nil
+                local location, duplicate_location
+                local headers_complete = false
+                local header_bytes = 0
                 while true do
                     local line = ssl_sock:receive("*l")
-                    if not line or line == "" then break end
+                    if not line then break end
+                    if line == "" then headers_complete = true; break end
+                    header_bytes = header_bytes + #line
+                    if header_bytes > 65536 then break end
                     if line:lower():match("^transfer%-encoding:%s*chunked") then
                         is_chunked = true
                     end
                     local cl = line:lower():match("^content%-length:%s*(%d+)")
                     if cl then content_length = tonumber(cl) end
+                    if line:lower():match("^location:") then
+                        if location then duplicate_location = true end
+                        location = line:match("^[^:]+:%s*(.-)%s*$")
+                    end
                 end
 
-                if not status_code or status_code ~= 200 then
+                if headers_complete and not duplicate_location and Redirects.isRedirect(status_code)
+                        and type(location) == "string" and #location <= Redirects.MAX_URL_BYTES then
+                    os.remove(dest_path)
+                    ffiutil.writeToFD(child_write_fd, "REDIRECT:" .. location)
+                elseif not headers_complete or duplicate_location or status_code ~= 200 then
                     os.remove(dest_path)
                     ffiutil.writeToFD(child_write_fd, "ERROR:" .. tostring(status_code or "connection failed"))
                 else
@@ -1410,10 +1447,9 @@ local function downloadFile(url, dest_path, callback)
 
                 ssl_sock:close()
             else
-                -- Non-macOS: use standard https.request path
-                local subprocess_https = require("ssl.https")
+                -- Authenticated TLS with explicit parent-controlled redirects.
+                local subprocess_https = require("koassistant_update_tls")
                 local subprocess_ltn12 = require("ltn12")
-                subprocess_https.TIMEOUT = DOWNLOAD_STALL_TIMEOUT
                 -- Per read, no total: a total inherited from the parent's last
                 -- request must not cut a slow download
                 pcall(function() require("socketutil"):set_timeout(DOWNLOAD_STALL_TIMEOUT, -1) end)
@@ -1424,20 +1460,30 @@ local function downloadFile(url, dest_path, callback)
                     return
                 end
 
-                local req_ok, code = pcall(function()
-                    return select(2, subprocess_https.request{
+                local req_ok, result, code, headers = pcall(function()
+                    return subprocess_https.request({
                         url = url,
                         method = "GET",
+                        redirect = false,
                         headers = {
                             ["User-Agent"] = "KOReader-KOAssistant-Plugin",
                         },
                         sink = subprocess_ltn12.sink.file(output_file),
-                    })
+                    }, DOWNLOAD_STALL_TIMEOUT)
                 end)
+                -- sink.file closes on completion, but exceptions can leave it
+                -- open. Avoid retaining the handle across a redirect/retry.
+                pcall(function() output_file:close() end)
 
-                if not req_ok or (code and code ~= 200) then
+                local location = type(headers) == "table" and headers.location
+                if req_ok and result and Redirects.isRedirect(tonumber(code))
+                        and type(location) == "string" and #location <= Redirects.MAX_URL_BYTES then
                     os.remove(dest_path)
-                    ffiutil.writeToFD(child_write_fd, "ERROR:" .. tostring(code or "connection failed"))
+                    ffiutil.writeToFD(child_write_fd, "REDIRECT:" .. location)
+                elseif not req_ok or not result or tonumber(code) ~= 200 then
+                    os.remove(dest_path)
+                    -- Exception strings may contain the signed download URL.
+                    ffiutil.writeToFD(child_write_fd, "ERROR:" .. (tonumber(code) and ("HTTP " .. code) or "Download request failed"))
                 else
                     ffiutil.writeToFD(child_write_fd, "OK")
                 end
@@ -1446,7 +1492,8 @@ local function downloadFile(url, dest_path, callback)
 
         if not ok then
             os.remove(dest_path)
-            ffiutil.writeToFD(child_write_fd, "ERROR:" .. tostring(sub_err))
+            -- Do not expose signed asset URLs through library exception text.
+            ffiutil.writeToFD(child_write_fd, "ERROR:Download request failed")
         end
 
         ffi.C.close(child_write_fd)
@@ -1478,10 +1525,23 @@ local function downloadFile(url, dest_path, callback)
         closeFd()
         cleanup(true)
 
-        local error_msg = status_data:match("^ERROR:(.+)")
-        if error_msg then
+        local redirect_url = status_data:match("^REDIRECT:(.*)$")
+        if redirect_url then
+            local next_url, redirect_err = Redirects.nextURL(redirect_url, redirect_state)
             os.remove(dest_path)
-            callback(false, error_msg)
+            if not next_url then
+                callback(false, redirect_err)
+            else
+                -- Re-enter in the parent so every host is resolved before fork
+                -- on macOS. A shared deadline bounds the whole redirect chain.
+                downloadFile(next_url, dest_path, callback, redirect_state)
+            end
+            return
+        end
+        local error_msg = status_data:match("^ERROR:(.+)")
+        if error_msg or status_data ~= "OK" then
+            os.remove(dest_path)
+            callback(false, error_msg or _("Download did not complete"))
         else
             -- Verify file exists and is non-empty
             local attr = lfs.attributes(dest_path)
@@ -1539,18 +1599,21 @@ local function verifyExtractedPlugin(staging_dir, expected_version)
         return false, "main.lua not found in extracted plugin"
     end
 
-    -- Load and verify version
-    local load_ok, loaded_meta = pcall(dofile, meta_path)
-    if not load_ok then
-        return false, "Failed to load _meta.lua: " .. tostring(loaded_meta)
+    -- Inspect metadata without executing code from the not-yet-installed ZIP.
+    local f = io.open(meta_path, "rb")
+    if not f then return false, "Could not read extracted metadata" end
+    local content = f:read("*a")
+    f:close()
+    local version = content:match('version%s*=%s*"([^"\n]+)"')
+    if version ~= expected_version then
+        return false, "Version mismatch: expected " .. tostring(expected_version) .. ", got " .. tostring(version)
     end
-
-    if not loaded_meta or not loaded_meta.version then
-        return false, "_meta.lua does not contain version"
-    end
-
-    if loaded_meta.version ~= expected_version then
-        return false, "Version mismatch: expected " .. expected_version .. ", got " .. loaded_meta.version
+    for _, name in ipairs({ "koassistant_constants.lua", "koassistant_update_checker.lua",
+            "koassistant_release_channel.lua", "koassistant_download_redirects.lua", "koassistant_update_tls.lua", "koassistant_question_queue.lua",
+            "koassistant_question_store.lua", "koassistant_storage_registry.lua" }) do
+        if lfs.attributes(staging_dir .. "/" .. name, "mode") ~= "file" then
+            return false, "Required plugin file missing: " .. name
+        end
     end
 
     return true
@@ -1570,7 +1633,20 @@ local function copyMismatch(src, dst, rel)
     end
     if src_attr.mode == "file" then
         if dst_attr.size ~= src_attr.size then return rel end
-        return nil
+        local a, b = io.open(src, "rb"), io.open(dst, "rb")
+        if not a or not b then
+            if a then a:close() end
+            if b then b:close() end
+            return rel
+        end
+        local same = true
+        while true do
+            local left, right = a:read(65536), b:read(65536)
+            if left ~= right then same = false; break end
+            if not left then break end
+        end
+        a:close(); b:close()
+        return not same and rel or nil
     end
     if src_attr.mode == "directory" then
         for entry in lfs.dir(src) do
@@ -1638,7 +1714,7 @@ local function preserveUserFiles(src_dir, preserve_dir)
 end
 
 --- Restore user-owned files into the newly installed plugin directory
---- Non-fatal: plugin works even if user files aren't restored
+--- The caller verifies the resulting staging copy before installing it.
 --- @param preserve_dir string Directory containing preserved user files
 --- @param target_dir string New plugin directory
 --- @return boolean success, string|nil error_msg
@@ -1686,35 +1762,21 @@ end
 --- @param base_path string Base path for the backup directory
 --- @return string available_path
 local function findAvailableBackupPath(base_path)
-    if lfs.attributes(base_path, "mode") ~= "directory" then
-        return base_path
+    if not lfs.symlinkattributes(base_path) then return base_path end
+    -- Never overwrite an older recovery copy, including a file at this path.
+    for i = 2, 1000 do
+        local candidate = base_path .. "_" .. i
+        if not lfs.symlinkattributes(candidate) then return candidate end
     end
-
-    -- Try numbered suffixes
-    for i = 2, 10 do
-        local numbered_path = base_path .. "_" .. i
-        if lfs.attributes(numbered_path, "mode") ~= "directory" then
-            return numbered_path
-        end
-    end
-
-    -- Last resort: purge the original and reuse it
-    logger.warn("UpdateChecker: too many leftover backups, purging", base_path)
-    purgeTree(base_path)
-    return base_path
+    return nil
 end
 
 --- Extract the update zip into staging_path with the archive's single root
 --- directory ("koassistant.koplugin/") stripped.
---- KOReader builds through mid-2026 provide Device:unpackArchive; newer builds
---- removed it in favor of ffi/archiver (shipped since KOReader 2025.06), so
---- support both. The iterate/extractToPath loop below replicates what the old
---- Device method did internally.
+--- Use ffi/archiver (KOReader 2025.06+) so every entry can be validated
+--- before extraction. Reject traversal, links and unexpected archive roots.
 --- @return boolean ok, string|nil error (error is for logging, not display)
 local function extractUpdateArchive(archive_path, staging_path)
-    if Device.unpackArchive then
-        return Device:unpackArchive(archive_path, staging_path, true)
-    end
     local ok_mod, Archiver = pcall(require, "ffi/archiver")
     if not ok_mod or type(Archiver) ~= "table" or not Archiver.Reader then
         return false, "no archive extraction API in this KOReader version"
@@ -1725,14 +1787,32 @@ local function extractUpdateArchive(archive_path, staging_path)
         arc:close()
         return false, open_err or "could not open archive"
     end
+    local seen = {}
     for entry in arc:iterate() do
-        -- Strip one leading path component; the root directory entry itself
-        -- (no remainder after the slash) is skipped.
-        local tail = entry.path:match("^[^/]+/(.+)$")
+        local path = entry.path
+        local tail = type(path) == "string" and path:match("^koassistant%.koplugin/(.*)$")
+        local invalid = not tail or path:find("\\", 1, true) or path:find("%z")
+            or (entry.mode ~= "file" and entry.mode ~= "directory")
         if tail then
-            if not arc:extractToPath(entry.path, staging_path .. "/" .. tail) then
-                break
+            for part in tail:gmatch("[^/]+") do
+                if part == "." or part == ".." then invalid = true end
             end
+            if tail:sub(1, 1) == "/" or tail:find("//", 1, true) or seen[tail] then invalid = true end
+            seen[tail] = true
+        end
+        if invalid then
+            arc:close()
+            return false, "Unsafe or duplicate archive entry"
+        end
+        if tail ~= "" then
+            if not arc:extractToPath(path, staging_path .. "/" .. tail) then
+                local err = arc.err
+                arc:close()
+                return false, err or "extraction failed"
+            end
+        elseif entry.mode ~= "directory" then
+            arc:close()
+            return false, "Invalid archive root"
         end
     end
     local ok = not arc.err
@@ -1757,6 +1837,9 @@ local function verifyDownload(path, update_info)
     end
     if update_info.zip_sha256 then
         local ok, sha = pcall(require, "ffi/sha2")
+        if not ok or type(sha) ~= "table" or not sha.sha256 then
+            return _("This KOReader cannot verify the update checksum. Please update KOReader first.")
+        end
         if ok and type(sha) == "table" and sha.sha256 then
             local f = io.open(path, "rb")
             if not f then return _("The download could not be read. Please try again.") end
@@ -1781,6 +1864,14 @@ end
 performUpdate = function(update_info)
     loadUI()
     getBinPaths()
+    if _G.KOAssistantUpdatePending then
+        UIManager:show(InfoMessage:new{ text = _("An update is already in progress or installed. Please restart KOReader before updating again."), timeout = 5 })
+        return
+    end
+    if updateBusy() then
+        UIManager:show(InfoMessage:new{ text = _("Please finish or cancel queued and running AI questions before updating."), timeout = 5 })
+        return
+    end
     -- Guard: don't update git-based dev installs (would destroy repo). B379:
     -- a worktree or submodule checkout has a .git FILE
     if lfs.attributes(plugin_dir .. ".git", "mode") ~= nil then
@@ -1808,6 +1899,8 @@ performUpdate = function(update_info)
         return
     end
 
+    _G.KOAssistantUpdatePending = true
+
     -- Compute paths - all siblings in plugins/ directory for atomic renames
     local plugin_path = plugin_dir:gsub("/$", "")  -- Remove trailing slash
     local plugins_parent = plugin_path:match("(.*/)")  -- Parent directory
@@ -1818,6 +1911,7 @@ performUpdate = function(update_info)
 
     -- Helper to clean up temp files and show error
     local function updateFailed(msg, cleanup_paths)
+        _G.KOAssistantUpdatePending = nil
         for _idx, path in ipairs(cleanup_paths or {}) do
             local attr = lfs.attributes(path, "mode")
             if attr == "file" then
@@ -1830,6 +1924,14 @@ performUpdate = function(update_info)
             text = T(_("Update failed: %1"), msg),
             timeout = 8,
         })
+    end
+
+    -- Fixed temporary names must never follow leftovers or symbolic links.
+    for _, path in ipairs({ archive_path, staging_path, preserve_path }) do
+        if not purgeTree(path) or lfs.symlinkattributes(path) then
+            updateFailed(_("Could not clear a previous update's temporary files. Nothing was changed."))
+            return
+        end
     end
 
     -- Show download progress
@@ -1845,6 +1947,11 @@ performUpdate = function(update_info)
 
         if not dl_success then
             updateFailed(dl_error or _("Download failed"), { archive_path })
+            return
+        end
+        -- A foreground request may have started during the asynchronous download.
+        if updateBusy() then
+            updateFailed(_("AI questions became active during download. Finish or cancel them and try again."), { archive_path })
             return
         end
         -- Show install progress
@@ -1868,7 +1975,11 @@ performUpdate = function(update_info)
         if lfs.attributes(staging_path, "mode") == "directory" then
             purgeTree(staging_path)
         end
-        lfs.mkdir(staging_path)
+        if not lfs.mkdir(staging_path) then
+            UIManager:close(install_msg)
+            updateFailed(_("Could not create update staging directory."), { archive_path })
+            return
+        end
 
         local extract_ok, extract_err = extractUpdateArchive(archive_path, staging_path)
         if not extract_ok then
@@ -1899,8 +2010,24 @@ performUpdate = function(update_info)
             return
         end
 
+        -- Restore into staging and verify BEFORE replacing the live plugin.
+        -- A failed/full-disk copy must not install a working plugin without keys.
+        local restore_ok, restore_err = restoreUserFiles(preserve_path, staging_path)
+        local missing = firstMissingUserItem(plugin_path, staging_path)
+        if not restore_ok or missing then
+            UIManager:close(install_msg)
+            updateFailed(restore_err or ("User file was not preserved: " .. tostring(missing)), { archive_path, staging_path, preserve_path })
+            return
+        end
+        pcall(os.execute, "sync")
+
         -- Step 5: Atomic swap - old plugin -> backup
         local backup_path = findAvailableBackupPath(backup_base)
+        if not backup_path then
+            UIManager:close(install_msg)
+            updateFailed(_("Too many previous update backups. Please move them somewhere safe before updating."), { archive_path, staging_path, preserve_path })
+            return
+        end
         local mv_ret = ffiutil.execute(mv_bin, plugin_path, backup_path)
         if mv_ret ~= 0 then
             UIManager:close(install_msg)
@@ -1917,49 +2044,21 @@ performUpdate = function(update_info)
             UIManager:close(install_msg)
             if restore_ret ~= 0 then
                 logger.err("UpdateChecker: CRITICAL - backup restore also failed!")
-                updateFailed(_("Failed to install update AND failed to restore previous version. Backup is at: ") .. backup_path, { archive_path, preserve_path })
+                updateFailed(_("Failed to install update AND failed to restore previous version. Backup is at: ") .. backup_path, { archive_path, staging_path, preserve_path })
             else
-                updateFailed(_("Failed to install new plugin version. Previous version restored."), { archive_path, preserve_path })
+                updateFailed(_("Failed to install new plugin version. Previous version restored."), { archive_path, staging_path, preserve_path })
             end
             return
         end
 
-        -- Step 7: Restore user files (non-fatal)
-        local restore_ok, restore_err = restoreUserFiles(preserve_path, plugin_path)
-        if not restore_ok then
-            logger.warn("UpdateChecker: user file restore issue:", restore_err)
-        end
-        -- Check against the originals, still in the old plugin folder: when a
-        -- file did not arrive intact, step 8 keeps that folder instead of
-        -- deleting the only good copy.
-        local missing = firstMissingUserItem(backup_path, plugin_path)
-        if missing then
-            logger.warn("UpdateChecker: user file did not reach the new version, keeping", backup_path, ":", missing)
-        end
-
-        -- B379: flush the swap and the restored files before the reader is
-        -- told to restart (a power cut after the rename could leave the new
-        -- files unwritten); KOReader's own update syncs the same way
+        -- The complete old plugin is retained for manual rollback. Settings and
+        -- ai-inbox outside the plugin directory are never moved or rewritten.
         pcall(os.execute, "sync")
         if ffiutil.fsyncDirectory then pcall(ffiutil.fsyncDirectory, plugins_parent) end
-
-        -- Step 8: Cleanup (non-fatal)
         pcall(os.remove, archive_path)
-        if not missing then
-            pcall(purgeTree, backup_path)
-            pcall(purgeTree, preserve_path)
-        end
-
+        pcall(purgeTree, preserve_path)
         UIManager:close(install_msg)
-
-        -- Show success and ask for restart
-        local restart_msg = T(_("KOAssistant updated to version %1.\n\nPlease restart KOReader to use the new version."), update_info.latest_version)
-        if missing then
-            restart_msg = restart_msg .. "\n\n" .. T(_("Note: your file %1 could not be carried over to the new version. The previous version, with all your files, is kept at:\n%2"), missing, backup_path)
-        elseif not restore_ok then
-            restart_msg = restart_msg .. "\n\n" .. _("Note: Some user files (API keys, custom actions) may need to be reconfigured.")
-        end
-
+        local restart_msg = T(_("KOAssistant updated to version %1.\n\nPlease restart KOReader to use the new version. Previous plugin kept at:\n%2"), update_info.latest_version, backup_path)
         UIManager:askForRestart(restart_msg)
     end)
 end
@@ -1983,18 +2082,6 @@ function UpdateChecker.checkForUpdates(auto, include_prereleases)
     end
 
     local timeout = auto and AUTO_CHECK_TIMEOUT or MANUAL_CHECK_TIMEOUT
-
-    -- Helper to extract version string from tag (handles v0.4.1, v.0.4.1, 0.4.1)
-    local function extractVersion(tag)
-        if not tag then return nil end
-        if type(tag) ~= "string" then
-            logger.warn("extractVersion: expected string tag, got " .. type(tag))
-            return nil
-        end
-        -- Remove common prefixes: "v", "v.", "V", "V."
-        local version = tag:gsub("^[vV]%.?", "")
-        return version
-    end
 
     -- Show loading message only for manual checks (auto checks are silent)
     local loading_msg = nil
@@ -2047,75 +2134,27 @@ function UpdateChecker.checkForUpdates(auto, include_prereleases)
             return
         end
 
-        local decode_success, releases = pcall(json.decode, response_data)
-
-        if not decode_success then
-            logger.err("Failed to parse GitHub API response:", releases)
+        local releases, decode_error = ReleaseChannel.decodeResponse(response_data, json.decode)
+        if not releases then
+            logger.err("Update check:", decode_error)
             if not auto then
-                UIManager:show(InfoMessage:new{
-                    text = "Failed to check for updates: Invalid response format",
-                    timeout = 3
-                })
+                UIManager:show(InfoMessage:new{ text = _("Failed to check for updates: Invalid response format"), timeout = 3 })
             end
             return
         end
-
-        -- Validate releases is a table (array)
-        if type(releases) ~= "table" then
-            logger.err("Failed to parse GitHub API response: expected array, got " .. type(releases), "data:", response_data:sub(1, 200))
+        local update_info, selection_error = ReleaseChannel.selectLatestRelease(releases, include_prereleases, compareVersions)
+        if not update_info then
             if not auto then
-                UIManager:show(InfoMessage:new{
-                    text = "Failed to check for updates: Invalid response format",
-                    timeout = 3
-                })
+                UIManager:show(InfoMessage:new{ text = _("No installable fork releases found. Please try again later."), timeout = 5 })
             end
+            logger.info("Update check:", selection_error)
             return
         end
-
-        -- Check completed with a parseable payload: only now mark the session done
-        -- (failures above fall through so the next plugin init retries) and persist
-        -- the timestamp for the 24h min-interval gate in main.lua's auto trigger.
-        if auto then
-            _session_auto_check_done = true
-        end
+        if auto then _session_auto_check_done = true end
         G_reader_settings:saveSetting("koassistant_last_update_check", os.time())
-
-        -- Find the latest release by comparing versions (don't rely on array order)
-        local latest_release = nil
-        local latest_version_str = nil
-        for _idx, release in ipairs(releases) do
-            if not release.draft then
-                if include_prereleases or not release.prerelease then
-                    local version_str = extractVersion(release.tag_name)
-                    if version_str and parseVersion(version_str) then
-                        if not latest_release then
-                            latest_release = release
-                            latest_version_str = version_str
-                        else
-                            -- Compare and keep the higher version
-                            if compareVersions(version_str, latest_version_str) > 0 then
-                                latest_release = release
-                                latest_version_str = version_str
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-        if not latest_release then
-            if not auto then
-                UIManager:show(InfoMessage:new{
-                    text = "No releases found",
-                    timeout = 3
-                })
-            end
-            return
-        end
-
-        -- Use the already-extracted version from the loop
-        local latest_version = latest_version_str
+        local latest_version = update_info.latest_version
         local current_version = meta.version
+        update_info.current_version = current_version
 
         -- Type validation before comparison
         if type(current_version) ~= "string" then
@@ -2144,34 +2183,6 @@ function UpdateChecker.checkForUpdates(auto, include_prereleases)
         logger.info("Update check: current=" .. current_version .. ", latest=" .. latest_version .. ", comparison=" .. comparison)
 
         if comparison < 0 then
-            -- Extract zip asset URL for auto-update
-            local zip_url, zip_size, zip_sha256 = nil, nil, nil
-            if latest_release.assets then
-                for _idx, asset in ipairs(latest_release.assets) do
-                    if asset.name and asset.name:match("%.zip$") then
-                        zip_url = asset.browser_download_url
-                        -- B379: what the download must match (a json null
-                        -- decodes to a function, so check the types)
-                        zip_size = type(asset.size) == "number" and asset.size or nil
-                        zip_sha256 = type(asset.digest) == "string"
-                            and asset.digest:match("^sha256:(%x+)$") or nil
-                        break
-                    end
-                end
-            end
-
-            -- New version available
-            local update_info = {
-                current_version = current_version,
-                latest_version = latest_version,
-                release_notes = latest_release.body or "No release notes available.",
-                download_url = latest_release.html_url,
-                is_prerelease = latest_release.prerelease or false,
-                zip_url = zip_url,
-                zip_size = zip_size,
-                zip_sha256 = zip_sha256,
-            }
-
             -- Check if streaming is active - if so, defer the popup
             if _G.KOAssistantStreaming then
                 logger.info("Update available but streaming active, deferring popup")
@@ -2210,6 +2221,7 @@ end
 -- Test seams (release-blocking six-pack [4], 2026-08-17): the registry-driven
 -- preserve/restore pair, previously untestable file-locals — the old test
 -- exercised a hand-copied re-implementation instead of this shipping code.
+UpdateChecker._downloadFile = downloadFile
 UpdateChecker._preserveUserFiles = preserveUserFiles
 UpdateChecker._firstMissingUserItem = firstMissingUserItem
 UpdateChecker._restoreUserFiles = restoreUserFiles

@@ -13,7 +13,7 @@ This fork's modifications are distributed under the same license.
 
 ## What this fork adds
 
-The current development snapshot is `0.23.0-queue.3-rc5`:
+The current fork version is `0.23.1` (includes the RC5 features):
 
 - Queue a selected passage, PDF region, or complete PDF page and keep reading.
   Requests run serially; completed answers appear in an inbox without opening a
@@ -70,18 +70,42 @@ the plugin's code folder, and ordinary KOAssistant chat backup does not include
 it. Close KOReader before copying the entire inbox for backup or migration.
 Earlier test inbox formats are neither automatically imported nor deleted.
 
-## Online update status
+## Online updates
 
-Fork-specific online updating is not configured or verified in this snapshot.
-The inherited update constants still point at the upstream repository. Accepting
-an upstream update can replace this fork's added code; use manual fork packages
-for now and consider disabling automatic update checks in KOAssistant settings.
+Version `0.23.1` introduces this fork's independent update channel:
+`waverlylua/koassistant.koplugin`. Only tags such as `waverly-v0.23.1`, with
+matching `_meta.lua` version `0.23.1`, are considered. Inherited upstream tags
+are ignored. The release must contain an uploaded `koassistant.koplugin.zip`
+asset with a valid size and GitHub SHA-256 digest. Newer incomplete releases are
+skipped until their asset is ready. Automatic checking uses the existing
+KOAssistant update settings; installing still requires **Update Now**.
 
-Before advertising an online update channel for this fork, a release must point
-at the intended fork repository, use a version/tag pair recognized by the
-updater, attach the expected plugin ZIP, and pass an upgrade test that preserves
-personal configuration and the separate inbox. A public repository by itself
-does not establish a working update channel.
+RC5 and earlier copies still query upstream. Follow the installation steps above
+once to install 0.23.1. Thereafter use **Check for updates → Update Now**, then
+restart KOReader. A git checkout intentionally does not offer automatic install.
+KOReader 2025.06 or newer with `ffi/archiver` and SHA-256 support is required.
+
+Finish or cancel queued/running AI questions before updating. While downloading,
+new queued questions are blocked. Dismissing the release notes with **Later**
+changes nothing. Once **Update Now** starts, let it finish; download failures
+leave the old plugin in place and can be retried. An installed update requires a
+restart before another update or queued question can begin.
+
+The updater authenticates TLS using KOReader’s bundled CA certificates and the
+server’s DNS name, then verifies size, SHA-256, archive paths, required files
+and version. Certificate errors fail closed; keep the device clock correct.
+It copies plugin-local credentials/customizations into staging and compares
+bytes before replacing any live code. KOReader settings and the external
+`ai-inbox/` are never moved. A failed second rename attempts immediate rollback.
+The old plugin is kept beside the active plugin as `koassistant.koplugin.backup`
+(or a numbered suffix). For manual rollback, fully close KOReader, move the new
+plugin out of `plugins/`, and rename the backup to `koassistant.koplugin`.
+Keep one active plugin copy. Remove old backups only after confirming the new
+version and saved answers work; these copies may contain private credentials.
+A sudden power loss between directory renames can require this manual recovery.
+
+Published release assets and the hosted check must be verified per release.
+Offline tests do not prove a live download or physical e-ink installation works.
 
 ## Building and checking a source checkout
 

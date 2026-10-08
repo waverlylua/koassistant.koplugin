@@ -1,0 +1,40 @@
+KOAssistant experimental fork 0.23.1
+Release tag: waverly-v0.23.1
+
+This release includes the existing queued-question inbox, saved follow-ups,
+PDF image questions and local bounded math renderer, plus fork-specific updates.
+
+ONE-TIME INSTALLATION
+Fully close KOReader and back up its settings, plugin folder and entire
+ai-inbox folder. Extract koassistant.koplugin.zip into KOReader's plugins
+folder, merging/replacing program files while retaining your own configuration,
+API keys, custom actions/models, behaviors and domains. Keep one active copy.
+Restart KOReader and check that KOAssistant's version is 0.23.1.
+Old RC5 installations cannot discover this fork automatically.
+
+LATER UPDATES
+Use the existing KOAssistant automatic-check setting or Check for updates.
+Only this fork's complete waverly-v* releases are considered. Choose Update Now
+and restart KOReader after installation. Finish/cancel pending AI questions
+first. A git checkout must still be updated through git.
+
+SAFETY
+API and download connections verify TLS certificates and server hostnames.
+The download must match GitHub's size and SHA-256 digest. The updater rejects
+unsafe ZIP paths and unexpected versions. Personal plugin files are staged and
+byte-checked before any code swap. Settings and the separate ai-inbox are left
+in place. The previous plugin remains beside the new plugin as a recovery copy.
+Failed downloads can be retried. An update in progress or awaiting restart
+cannot be installed twice; new queued questions are blocked until restart.
+
+For manual recovery, close KOReader, move the new plugin out of plugins/, and
+rename koassistant.koplugin.backup (or its numbered variant) to
+koassistant.koplugin. A power cut between renames can require this recovery.
+Backups can contain private configuration and credentials; store them safely.
+
+REQUIREMENTS AND LIMITS
+Requires KOReader 2025.06+ with ffi/archiver and SHA-256 support, network access
+to GitHub and its release-asset host, and enough storage for staging and backup.
+Experimental personal fork, with no support or compatibility guarantee.
+Physical Android/e-ink devices and live subscription image requests remain
+unverified. See FORK.md and the original RC5 notes for feature limitations.

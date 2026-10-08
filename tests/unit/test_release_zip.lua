@@ -89,7 +89,7 @@ TestRunner:test("the download is checked before anything is extracted", function
     local check = body and body:find("verifyDownload(archive_path, update_info)", 1, true)
     local extract = body and body:find("extractUpdateArchive(archive_path, staging_path)", 1, true)
     TestRunner:assertTrue(check and extract and check < extract, "verify, then extract")
-    TestRunner:assertTrue(uc:find('asset.digest:match("^sha256:(%x+)$")', 1, true),
+    TestRunner:assertTrue(read("koassistant_release_channel.lua"):find('asset.digest:match("^sha256:(%x+)$")', 1, true),
         "the release's sha256 is what the download must match")
 end)
 

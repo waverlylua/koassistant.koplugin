@@ -18,10 +18,12 @@ and live subscription image requests remain unverified. Math rendering supports
 a bounded LaTeX subset and keeps unsupported expressions as source. Requests
 need KOReader to remain running and can incur provider charges.
 
-**Updates:** This snapshot still checks the upstream repository. Fork-specific
-online updates are not configured or verified yet. Install fork packages
-manually and avoid accepting upstream updates if you want to retain these
-features. Back up the entire `ai-inbox/` directory as well as your settings.
+**Updates:** Version 0.23.1 checks this fork's own release channel. Install it
+once over RC5, then use KOAssistant's normal update check and **Update Now**,
+followed by a KOReader restart. Only complete `waverly-v*` releases with the
+expected ZIP and SHA-256 are offered. Settings and the separate `ai-inbox/`
+are preserved; the previous plugin is kept for recovery. See the
+[fork update guide](FORK.md#online-updates) for requirements and precautions.
 
 ## Upstream documentation
 

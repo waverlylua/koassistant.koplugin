@@ -62,6 +62,13 @@ function Runtime.get(plugin)
     return queue
 end
 
+-- Read only: checking update safety must not initialize or resume the queue.
+function Runtime.isBusy()
+    if not queue then return false end
+    local counts = queue:counts()
+    return counts.queued > 0 or counts.running > 0 or queue.storage_error ~= nil
+end
+
 function Runtime.badge()
     if not queue then return "" end
     local counts = queue:counts()

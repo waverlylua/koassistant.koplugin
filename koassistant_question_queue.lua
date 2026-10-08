@@ -98,6 +98,7 @@ function Queue:counts()
 end
 
 function Queue:enqueue(snapshot)
+    if _G.KOAssistantUpdatePending then return nil, "KOAssistant is updating. Please restart KOReader before adding questions." end
     if self.storage_error then return nil, self.storage_error end
     if type(snapshot) ~= "table" or type(snapshot.messages) ~= "table"
             or not snapshot.config or not snapshot.document then return nil, "Incomplete question snapshot" end
@@ -127,6 +128,7 @@ function Queue:_schedule()
 end
 
 function Queue:_pump()
+    if _G.KOAssistantUpdatePending then return end
     if self.active or self.paused or self.storage_error then return end
     local job
     for _, candidate in ipairs(self.jobs) do
@@ -191,6 +193,7 @@ function Queue:cancel(id, interrupted)
 end
 
 function Queue:retry(id)
+    if _G.KOAssistantUpdatePending then return false, "KOAssistant is updating. Please restart KOReader before retrying questions." end
     if self.storage_error then return nil, self.storage_error end
     local job, load_err = self:get(id)
     if not job and load_err then return nil, load_err end
