@@ -315,7 +315,13 @@ function OAuth._setAsyncRunnerForTests(runner)
     asyncRunner = runner or runAsync
 end
 
-function OAuth.resolveAccessTokenAsync(settings, on_done)
+-- A rotating refresh token must not be spent twice by overlapping callers
+-- (for example, a queued question cancelled and immediately retried). Share
+-- only an active refresh for the exact settings object and token. Completed
+-- entries, including their token keys and callback references, are removed.
+local pendingRefreshes = setmetatable({}, { __mode = "k" })
+
+function OAuth.resolveAccessTokenAsync(settings, on_done, register_cancel)
     local auth = OAuth.readAuth(settings)
     if not auth then
         on_done(nil, _("OpenAI Subscription is not connected."))
@@ -326,29 +332,89 @@ function OAuth.resolveAccessTokenAsync(settings, on_done)
         return nil
     end
 
+    local token = str(auth.refresh_token)
+    if not token then
+        on_done(nil, _("OpenAI Subscription is not connected."))
+        return nil
+    end
+    local bucket = pendingRefreshes[settings]
+    if not bucket then bucket = {}; pendingRefreshes[settings] = bucket end
+    local pending = bucket[token]
+    local subscriber = { callback = on_done }
+    -- Cancelling one question detaches only that subscriber. Let the refresh
+    -- finish and save its rotated token; killing it could lose the only usable
+    -- token and would also break every other waiting question.
+    if register_cancel then
+        register_cancel(function() subscriber.callback = nil end)
+    end
+    if pending then
+        pending.subscribers[#pending.subscribers + 1] = subscriber
+        return pending.pid
+    end
+    pending = { subscribers = { subscriber }, completed = false }
+    bucket[token] = pending
+
+    local function finish(refreshed, err)
+        if pending.completed then return end
+        pending.completed = true
+        if bucket[token] == pending then bucket[token] = nil end
+        if next(bucket) == nil and pendingRefreshes[settings] == bucket then
+            pendingRefreshes[settings] = nil
+        end
+        local subscribers = pending.subscribers
+        pending.subscribers = {}
+        for _, waiting in ipairs(subscribers) do
+            local callback = waiting.callback
+            waiting.callback = nil
+            if callback then
+                -- One caller's UI exception must not strand the other callers.
+                local delivered = pcall(callback, refreshed, err)
+                if not delivered then
+                    require("koassistant_logger").warn("KOAssistant: OAuth refresh callback failed")
+                end
+            end
+        end
+    end
+
     local ok, pid_or_err = pcall(function()
-        return asyncRunner(OAuth.buildRefreshRequest(auth.refresh_token), function(result, transport_err)
+        return asyncRunner(OAuth.buildRefreshRequest(token), function(result, transport_err)
+            if pending.completed then return end
             if transport_err then
-                on_done(nil, transport_err)
+                finish(nil, transport_err)
                 return
             end
             if not result or result.status_code ~= 200 then
-                on_done(nil, errorMessage(result and result.status_code, result and result.body))
+                finish(nil, errorMessage(result and result.status_code, result and result.body))
                 return
             end
-            local refreshed = OAuth.normalizeTokenSet(decodeBody(result.body), auth.refresh_token)
+            -- Do not resurrect a disconnected account or overwrite credentials
+            -- from a reconnect that happened while this subprocess was running.
+            local current = OAuth.readAuth(settings)
+            if not current or current.refresh_token ~= token
+                    or current.chatgpt_account_id ~= auth.chatgpt_account_id then
+                finish(nil, _("OpenAI Subscription authentication changed during refresh. Retry the request."))
+                return
+            end
+            local refreshed = OAuth.normalizeTokenSet(decodeBody(result.body), token)
             if not (refreshed and refreshed.access_token and refreshed.refresh_token and refreshed.chatgpt_account_id) then
-                on_done(nil, _("Refresh response was incomplete."))
+                finish(nil, _("Refresh response was incomplete."))
                 return
             end
-            OAuth.saveAuth(settings, refreshed)
-            on_done(refreshed)
+            local saved_ok, saved = pcall(OAuth.saveAuth, settings, refreshed)
+            if not saved_ok or not saved then
+                finish(nil, _("Could not save refreshed OpenAI Subscription authentication."))
+                return
+            end
+            finish(refreshed)
         end)
     end)
     if not ok or not pid_or_err then
-        on_done(nil, ok and _("Failed to start OAuth refresh subprocess.") or tostring(pid_or_err))
+        -- runAsync can report failure synchronously through its callback and
+        -- then return nil. finish is deliberately once-only for that path.
+        finish(nil, ok and _("Failed to start OAuth refresh subprocess.") or tostring(pid_or_err))
         return nil
     end
+    pending.pid = pid_or_err
     return pid_or_err
 end
 

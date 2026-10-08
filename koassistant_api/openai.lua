@@ -18,6 +18,33 @@ local function hasContent(msg)
     return true
 end
 
+-- Saved multimodal messages use Chat Completions content parts. Responses
+-- (including the subscription backend) instead requires input_text and a flat
+-- input_image.image_url with detail alongside it. Do not rewrite the frozen
+-- history: retries, follow-ups and direct Chat Completions reuse that snapshot.
+-- https://developers.openai.com/api/docs/guides/images-vision
+local function responsesContent(content)
+    if type(content) ~= "table" then return content end
+    local parts = {}
+    for _, part in ipairs(content) do
+        if part.type == "text" then
+            parts[#parts + 1] = { type = "input_text", text = part.text }
+        elseif part.type == "image_url" then
+            local image = part.image_url
+            assert(type(image) == "table" and type(image.url) == "string" and image.url ~= "",
+                "Missing image URL in Responses request")
+            parts[#parts + 1] = {
+                type = "input_image", image_url = image.url, detail = image.detail or "auto",
+            }
+        else
+            -- Already-native Responses parts (input_text/input_image/etc.).
+            -- Output/reasoning/tool items are handled separately below.
+            parts[#parts + 1] = part
+        end
+    end
+    return parts
+end
+
 --- Resolve the effective web-search decision (per-action override > global),
 --- same pattern as anthropic_request.lua.
 local function webSearchEnabled(config)
@@ -82,7 +109,7 @@ function OpenAIHandler:buildResponsesRequest(message_history, config, model)
         elseif msg.role ~= "system" and hasContent(msg) then
             table.insert(request_body.input, {
                 role = msg.role == "assistant" and "assistant" or "user",
-                content = msg.content,
+                content = responsesContent(msg.content),
             })
         end
     end

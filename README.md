@@ -1,4 +1,33 @@
-# KOAssistant
+# KOAssistant (experimental personal fork)
+
+> **Personal experiment, independently maintained.** This fork is based on
+> [zeeyado/koassistant.koplugin](https://github.com/zeeyado/koassistant.koplugin)
+> and is not an official upstream release. It is shared as-is, with no support,
+> release schedule, or compatibility promises. Upstream authors retain credit;
+> the code remains under [GPL-3.0](LICENSE).
+
+This fork adds a durable **queued-question inbox**, PDF page/region questions,
+saved-answer follow-ups, prompt shortcuts, and **offline math typesetting** with
+safe wrapping for wide formulas. RC5 also adds image-payload routing for the
+OpenAI Subscription provider. See the [fork guide](FORK.md),
+[queue documentation](docs/QUEUED_QUESTIONS.md), and
+[RC5 release notes](QUEUED_QUESTIONS_RC5.txt).
+
+**Limits:** Experimental desktop-tested code; physical Android/e-ink hardware
+and live subscription image requests remain unverified. Math rendering supports
+a bounded LaTeX subset and keeps unsupported expressions as source. Requests
+need KOReader to remain running and can incur provider charges.
+
+**Updates:** This snapshot still checks the upstream repository. Fork-specific
+online updates are not configured or verified yet. Install fork packages
+manually and avoid accepting upstream updates if you want to retain these
+features. Back up the entire `ai-inbox/` directory as well as your settings.
+
+## Upstream documentation
+
+The documentation and badges below are retained from upstream. Their release,
+issue, and wiki links refer to upstream; use the fork guide above for the added
+features and current fork limitations.
 
 [![GitHub Release](https://img.shields.io/github/v/release/zeeyado/koassistant.koplugin)](https://github.com/zeeyado/koassistant.koplugin/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/github/license/zeeyado/koassistant.koplugin)](LICENSE)
@@ -37,7 +66,7 @@ Note: This README is the main documentation for now, and is being migrated to th
 - **Multilingual** → chat in any of 47 languages the AI understands, and use the KOAssistant UI in 26 languages
 - **Generate images** → turn a highlight into an image using OpenAI, xAI, or Gemini image models; generated images are kept on-device in a browsable **Generated Images** gallery (tap to view, hold to delete) and associated with the book they came from
 
-[32 built-in providers](#supported-providers--settings) (Anthropic, OpenAI, Gemini, Ollama, and more) plus custom OpenAI-compatible providers. OpenAI can also be used without an API key by signing in with your ChatGPT plan (OpenAI Subscription). Fully configurable: custom actions, behaviors, domains, per-action model overrides. Reasoning/thinking is configured per model (stance dial + per-model overrides). **One-tap auto-update** keeps the plugin current. Personal reading data (highlights, annotations, notebooks) is opt-in, not sent to the AI unless you enable it.
+[32 built-in providers](#supported-providers--settings) (Anthropic, OpenAI, Gemini, Ollama, and more) plus custom OpenAI-compatible providers. OpenAI can also be used without an API key by signing in with your ChatGPT plan (OpenAI Subscription). Fully configurable: custom actions, behaviors, domains, per-action model overrides. Reasoning/thinking is configured per model (stance dial + per-model overrides). **One-tap auto-update** is an upstream feature; fork-specific online updates are not yet configured or verified in this snapshot. Personal reading data (highlights, annotations, notebooks) is opt-in, not sent to the AI unless you enable it.
 
 **Status:** Active development. [issues](https://github.com/zeeyado/koassistant.koplugin/issues), [discussions](https://github.com/zeeyado/koassistant.koplugin/discussions), and [translations](https://hosted.weblate.org/engage/koassistant/) welcome. If you are somewhat technical and don't want to wait for tested releases, you can run off main branch to get the latest features. Breakage may happen. Also see [Assistant Plugin](https://github.com/omer-faruq/assistant.koplugin); both can run side by side.
 
@@ -3042,6 +3071,10 @@ Backup and restore functionality, index maintenance, plus reset options. See [Ba
 
 ## Updating the Plugin
 
+> **Experimental fork:** The instructions below describe the upstream updater.
+> This snapshot still targets upstream releases, which do not contain this
+> fork's queued-question additions. Use [manual fork installation](FORK.md#installation-and-data) until fork-specific updates have been configured and verified.
+
 KOAssistant can update itself with one tap. [Implementation](https://github.com/oleasteo/koreader-screenlockpin/blob/main/screenlockpin.koplugin/plugin/updatemanager.lua) in [oleasteo's ScreenLockPin](https://github.com/oleasteo/koreader-screenlockpin) used as template. When a new version is available, the update dialog includes an **"Update Now"** button that downloads, installs, and preserves your configuration automatically. Your API keys, custom actions, behaviors, domains, settings, chat history, notebooks, and caches are all safe.
 
 ### Automatic Update (One-Tap)
@@ -3124,6 +3157,9 @@ This gives you the latest development version (may include unreleased changes). 
 ---
 
 ## Update Checking
+
+> **Experimental fork:** These checks currently query upstream, not a verified
+> release channel for this fork. See the [fork update status](FORK.md#online-update-status).
 
 KOAssistant includes both automatic and manual update checking to keep you informed about new releases.
 

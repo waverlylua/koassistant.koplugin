@@ -192,6 +192,14 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             UIManager:unschedule(poll_task)
             poll_task = nil
         end
+        -- The answer has already been drained, or this request is being
+        -- abandoned. Release our pipe now; subprocess collection must never
+        -- perform reads on the UI loop (or retain a descriptor for later use).
+        if parent_read_fd then
+            local fd = parent_read_fd
+            parent_read_fd = nil
+            ffi.C.close(fd)
+        end
         if pid then
             if user_cancelled then
                 ffiutil.terminateSubProcess(pid)
@@ -200,15 +208,8 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             local collect_and_clean
             collect_and_clean = function()
                 if ffiutil.isSubProcessDone(pid) then
-                    if parent_read_fd then
-                        ffiutil.readAllFromFD(parent_read_fd)
-                    end
                     logger.dbg("collected non-streaming subprocess")
                 else
-                    if parent_read_fd and ffiutil.getNonBlockingReadSize(parent_read_fd) ~= 0 then
-                        ffiutil.readAllFromFD(parent_read_fd)
-                        parent_read_fd = nil
-                    end
                     UIManager:scheduleIn(5, collect_and_clean)
                     logger.dbg("non-streaming subprocess not yet collectable")
                 end
@@ -307,11 +308,16 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             finish(false, nil, _("Request cancelled by user."))
         end)
     end
+    -- Registration may cancel synchronously (e.g., an already-cancelled queued
+    -- request finishing asynchronous preparation). Do not start work afterward.
+    if completed then return end
 
     -- Start subprocess
     pid, parent_read_fd = ffiutil.runInSubProcess(background_fn, true)
 
     if not pid then
+        -- The second return value is an error string on failure, not an fd.
+        parent_read_fd = nil
         logger.warn("Failed to start non-streaming background request")
         finish(false, nil, _("Failed to start subprocess for request"))
         return
@@ -327,8 +333,16 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
     local bit = require("bit")
     local O_NONBLOCK = ffi.os == "OSX" and 0x0004 or ffi.C.O_NONBLOCK
     local flags = ffi.C.fcntl(parent_read_fd, 3)  -- F_GETFL
-    if flags >= 0 then
-        ffi.C.fcntl(parent_read_fd, 4, ffi.cast("int", bit.bor(flags, O_NONBLOCK)))  -- F_SETFL
+    local set_result = flags >= 0
+        and ffi.C.fcntl(parent_read_fd, 4, ffi.cast("int", bit.bor(flags, O_NONBLOCK)))  -- F_SETFL
+        or -1
+    if set_result < 0 then
+        -- A blocking pipe must never reach pollForData: one unsuccessful
+        -- fcntl would otherwise freeze the reader until the child writes.
+        logger.warn("KOAssistant: could not make response pipe non-blocking, errno", ffi.errno())
+        ffiutil.terminateSubProcess(pid)
+        finish(false, nil, _("Could not prepare a non-blocking response pipe."))
+        return
     end
 
     -- Process accumulated response data
@@ -521,11 +535,13 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         end
 
         -- Continue polling
-        poll_task = UIManager:scheduleIn(0.1, pollForData)
+        UIManager:scheduleIn(0.1, pollForData)
     end
 
     -- Start polling
-    poll_task = UIManager:scheduleIn(0.1, pollForData)
+    -- scheduleIn does not return a handle; unschedule expects the callback.
+    poll_task = pollForData
+    UIManager:scheduleIn(0.1, poll_task)
 end
 
 --- Query the AI with message history
@@ -560,7 +576,7 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
         -- Check for custom providers in settings
         if settings then
             local features = settings:readSetting("features") or {}
-            local custom_providers = features.custom_providers or {}
+            local custom_providers = config.custom_provider and { config.custom_provider } or features.custom_providers or {}
             for _idx, cp in ipairs(custom_providers) do
                 if cp.id == provider then
                     handler = handlers["custom_openai"]
@@ -640,6 +656,13 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
     local NetworkMgr = require("ui/network/manager")
     local query_return = STREAMING_IN_PROGRESS
     local function doQueryWithAuth()
+    -- Queue cancellation can happen during asynchronous OAuth refresh, before
+    -- the transport has installed its subprocess cancel handle. Never dispatch
+    -- a cancelled attempt when that refresh eventually returns.
+    if config._is_cancelled and config._is_cancelled() then
+        if on_complete then on_complete(false, nil, _("Request cancelled by user.")) end
+        return STREAMING_IN_PROGRESS
+    end
 
     -- max_tokens self-heal (item 27): when the provider rejects the request
     -- because our max_tokens exceeds the model's real output cap or context
@@ -678,6 +701,8 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
     -- had just refused (verified against the stub: byte-identical resend).
     local exact_prompt_tokens = nil
     local function tryMaxTokensSelfHeal(err)
+        -- Durable queued jobs are exactly one submission per explicit attempt.
+        if config.features and config.features._no_auto_retry then return false end
         if max_tokens_retry_done then return false end
         local parsed = ModelConstraints.parseMaxTokensError(err)
         if not parsed then
@@ -1071,7 +1096,7 @@ It is about %1 tokens (an estimate) and your %2 plan allows about %3 tokens a mi
             config.api_key = auth.access_token
             config.oauth = auth
             doQueryWithAuth()
-        end)
+        end, config._register_cancel)
         return STREAMING_IN_PROGRESS
     end
 

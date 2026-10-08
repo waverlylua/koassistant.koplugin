@@ -36,7 +36,11 @@ local T = require("ffi/util").template
 local util = require("util")
 local _ = require("koassistant_gettext")
 local Screen = Device.screen
-local MD = require("apps/filemanager/lib/md")
+local RawMarkdown = require("apps/filemanager/lib/md")
+local MarkdownImages = require("koassistant_markdown_images")
+local function MD(text, options)
+  return MarkdownImages.convert(text, RawMarkdown, options)
+end
 local MathRender = require("koassistant_math")
 local SpinWidget = require("ui/widget/spinwidget")
 local UIConstants = require("koassistant_ui.constants")
@@ -1135,7 +1139,12 @@ local function applyMath(viewer, text)
     if viewer.render_math == false or not MathRender.hasMath(text) then
         return text
     end
-    return MathRender.render(text)
+    return require("koassistant_math_renderer").render(text, {
+        font_size = Screen:scaleBySize(viewer.markdown_font_size or 20),
+        max_width = math.max(120, (viewer.width or Screen:getWidth())
+            - 2 * (viewer.text_padding or 0) - 2 * (viewer.text_margin or 0) - Screen:scaleBySize(30)),
+        max_height = math.max(120, (viewer.height or Screen:getHeight()) - Screen:scaleBySize(150)),
+    })
 end
 
 -- Pre-process brackets to prevent them being rendered as links
@@ -1262,6 +1271,11 @@ p {
 p.koa-math {
     text-align: center;
     margin: 0.6em 0;
+}
+/* MuPDF may shrink an inline image to the remaining page height, then
+   carry that tiny image to the next page. Block math keeps its real size. */
+p.koa-math img {
+    display: block;
 }
 
 table {
@@ -6217,7 +6231,7 @@ function ChatGPTViewer:showViewerSettings()
   -- (showExportDialog needs chat history). Artifact (simple_view) viewers have no
   -- history AND their own Export button, so the gear entry is skipped there (it
   -- would otherwise fail with "No chat to export"). Slice (e) note B.
-  if not self.simple_view then
+  if not self.simple_view and not self.saved_answer_view then
     table.insert(buttons, {
       {
         text = _("Export"),
@@ -6234,7 +6248,7 @@ function ChatGPTViewer:showViewerSettings()
   -- web_search_used booleans, so there is no content to show and the rows sat
   -- permanently disabled there. Skip them like Export above; the Info button
   -- already reports "Reasoning: Yes" / "Web search: Yes" for artifacts.
-  if not self.simple_view then
+  if not self.simple_view and not self.saved_answer_view then
     table.insert(buttons, {
       {
         text = _("Show Reasoning"),
@@ -6260,17 +6274,19 @@ function ChatGPTViewer:showViewerSettings()
       },
     })
   end
-  table.insert(buttons, {
-    {
-      text_func = function()
-        return self.show_debug_in_chat and _("Hide Debug") or _("Show Debug")
-      end,
-      callback = function()
-        UIManager:close(dialog)
-        self:toggleDebugMode()
-      end,
-    },
-  })
+  if not self.saved_answer_view then
+    table.insert(buttons, {
+      {
+        text_func = function()
+          return self.show_debug_in_chat and _("Hide Debug") or _("Show Debug")
+        end,
+        callback = function()
+          UIManager:close(dialog)
+          self:toggleDebugMode()
+        end,
+      },
+    })
+  end
 
   dialog = ButtonDialog:new{
     shrink_unneeded_width = true,
@@ -6620,7 +6636,7 @@ function ChatGPTViewer:refreshMarkdownDisplay()
 
   -- Re-convert markdown with new settings and update display
   -- 1. Auto-linkify plain URLs, 2. Escape non-link brackets, 3. Convert tables
-  local auto_linked = autoLinkUrls(self.text)
+  local auto_linked = autoLinkUrls(applyMath(self, self.text))
   local bracket_escaped = preprocessBrackets(auto_linked)
   local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
   local html_body, err = MD(preprocessed_text, {})

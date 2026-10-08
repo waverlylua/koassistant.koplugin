@@ -235,11 +235,11 @@ local function scanStorageLiterals(plugin_dir)
 end
 
 TestRunner:test("every settings/data koassistant_* literal is registered", function()
-    -- Registry stems for settings_dir/data_dir entries (strip the .lua suffix).
+    -- Registry stems for settings_dir/data_dir entries (strip file extensions, matching the source stem scan).
     local registered = {}
     for _, e in ipairs(Registry.all()) do
         if e.location == "settings_dir" or e.location == "data_dir" then
-            registered[(e.ref:gsub("%.lua$", ""))] = true
+            registered[(e.ref:gsub("%..*$", ""))] = true
         end
     end
 

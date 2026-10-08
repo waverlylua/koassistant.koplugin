@@ -13512,6 +13512,13 @@ return {
     resolveQuickPresetModel = resolveQuickPresetModel,
     -- Test seam (tests/unit/test_run_options.lua): the request bake
     _buildUnifiedRequestConfig = buildUnifiedRequestConfig,
+    -- Queued selection jobs use the same action/provider/reasoning resolution.
+    prepareQueuedConfig = function(action, base_config, plugin, domain_context)
+        local config = createTempConfig(action, base_config)
+        if action.provider or action.model then config.model = action.model end
+        buildUnifiedRequestConfig(config, domain_context, action, plugin)
+        return config
+    end,
     -- Test seam (tests/unit/test_front_matter_flow.lua): what a headless run hands back
     _headlessResult = headlessResult,
 }

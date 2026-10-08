@@ -1,0 +1,8 @@
+*
+!.gitignore
+!*.lua
+!*.py
+!corpus.json
+!rich-math-fixture.txt
+!README.md
+!android-schur-fixture.txt

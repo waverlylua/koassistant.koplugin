@@ -1,0 +1,62 @@
+KOAssistant queued questions v3 RC5
+Plugin version: 0.23.0-queue.3-rc5
+Release date: 2026-10-05
+
+WHAT CHANGED
+- Wide display formulas now wrap at safe mathematical boundaries instead of
+  immediately showing raw LaTeX. The reported Schur-complement expression keeps
+  its matrix, transpose, inverse and explanatory label at a readable size.
+- Matrix cells, fractions, scripts, paired delimiters, text labels and numbers
+  stay intact. Unsupported or genuinely indivisible oversized notation still
+  shows the original source. Saved answers and Copy answer are unchanged.
+- Image questions now support the OpenAI Subscription provider's GPT-4o/4.1/5/6
+  family gate. Saved text/image parts are converted to Responses input_text and
+  input_image parts, including source images repeated in saved-answer follow-ups.
+- Unsupported custom-question destinations are reported before the question
+  editor. Saved shortcut provider/model overrides remain respected.
+
+INSTALL OR UPDATE FROM RC4
+1. Fully close KOReader. Back up the existing plugin folder, KOReader settings
+   and the entire ai-inbox directory.
+2. Extract koassistant-queued-v3-rc5.zip into KOReader's plugins directory.
+   The ZIP contains one koassistant.koplugin folder. On a standard Android
+   installation this is /sdcard/koreader/plugins/koassistant.koplugin/.
+3. Replace plugin code while preserving personal configuration.lua, apikeys.lua,
+   custom_actions.lua, custom_models.lua, behaviors/ and domains/ if present.
+   Do not remove KOReader settings or ai-inbox, and do not keep duplicate active
+   copies of the plugin. The ZIP contains no personal credentials or settings.
+4. Restart KOReader and check version 0.23.0-queue.3-rc5. Existing RC4 inbox data
+   and provider configuration are retained. Opening an old answer uses the new
+   formula renderer without sending a new model request.
+5. For subscription image questions, select OpenAI Subscription and an available
+   supported image-capable model, then queue a PDF page or region question.
+   Existing failed jobs are not replayed automatically; a retry is explicit.
+
+VERIFICATION
+- Independent combined review: 350 focused checks passed; 14 changed/new Lua
+  files parsed before release-only version/documentation updates.
+- Full unit suite: 5,429 reported passing checks, one unchanged baseline failure
+  in the book-tools native-search common-word phrase fallback. No new failures.
+  Counts combine the repository's per-file assertion and test-case counters.
+- Native KOReader v2026.07.1 Linux: the exact reported formula renders at 720,
+  560 and 460 pixels. Actual answer-window checks passed at 824x1648 and 600x800,
+  including pagination, three opens and repeated Text/Math toggles. Cold opening
+  was about 61-62 ms; reopening was about 17-20 ms in this cloud test runtime.
+- Existing native formula corpora and the answer-opening performance regression
+  passed. Unsupported notation retains explicit source fallback.
+- Subscription image payload, provider gate, OAuth queue path and follow-up
+  tests passed with synthetic data and mocked transport. Frozen request source
+  remains unchanged; no real account or paid provider request was used.
+
+LIMITS
+This is a tested experimental plugin build. RC5 was not verified on physical
+Android/e-ink hardware or with a live OpenAI Subscription image request. Account
+entitlement, server acceptance, limits and model availability remain unverified.
+Earlier RC4 Android-emulator storage results are historical, not new RC5 device
+tests. The renderer implements a bounded offline LaTeX subset, not full TeX.
+
+DEVELOPER FILES
+The source ZIP contains the exact release source and reproducible test scripts.
+The cumulative patch applies to upstream commit
+c801d04dd085f9d2f1c0fbd448317dcbf838f868. The install ZIP excludes development
+tests, debug output, runtime profiles, personal configuration and credentials.

@@ -1,0 +1,39 @@
+Write the quadratic in block form as
+
+$$f(x,y)=\begin{bmatrix}x\\y\end{bmatrix}^{T}\begin{bmatrix}A&B\\B^T&C\end{bmatrix}\begin{bmatrix}x\\y\end{bmatrix}.$$
+
+Here $A$ and $C$ are symmetric, and joint convexity of $f$ means precisely that its Hessian, up to the irrelevant factor \(2\), is positive semidefinite:
+
+$$M=\begin{bmatrix}A&B\\B^{T}&C\end{bmatrix}\succeq 0.$$
+
+For a fixed $x$, the $y$-dependent part is
+
+$$y^TCy+2x^TBy.$$
+
+If $C$ is positive definite, setting its gradient with respect to $y$ to zero gives
+
+$$2B^Tx+2Cy=0,\qquad y^\star=-C^{-1}B^Tx.$$
+
+Substitution yields
+
+$$g(x)=f(x,y^\star)=x^T\bigl(A-BC^{-1}B^T\bigr)x.$$
+
+The matrix $A-BC^{-1}B^T$ is called the Schur complement of $C$ in the block matrix $M$.
+
+The key convex-analysis principle is that partial minimization preserves convexity. Hence
+
+$$A-BC^\dagger B^T\succeq0.$$
+
+The generalized Schur-complement conditions use the pseudoinverse and range:
+
+$$C\succeq0,\quad \operatorname{range}(B^T)\subseteq\operatorname{range}(C), \quad A-BC^\dagger B^T\succeq0.$$
+
+Related delimiter and matrix-order notation:
+
+$$\bigl(x\bigr)\quad\Bigl[x\Bigr]\quad\biggl\lfloor x\biggr\rfloor\quad\Biggl\lVert x\Biggr\rVert$$
+
+$$A\preceq B\succeq C\prec D\succ E\quad F^{\dagger}\quad G^{\ddagger}$$
+
+Unsupported notation must still show its original source:
+
+$$A\succeq0+\unsupportedSemanticCommand{C^\dagger}$$

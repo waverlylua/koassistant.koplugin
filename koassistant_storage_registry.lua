@@ -222,6 +222,34 @@ Registry.entries = {
         notes = "Renamed to koassistant_pinned_library.lua on load; clean if stragglers remain.",
     },
 
+    {
+        id = "question_inbox", label = "Queued questions & answers",
+        location = "data_dir", ref = "ai-inbox",
+        category = "conversations", backup = false,
+        reset_in = { "wipe_all" }, opt_in_reset = true, uninstall = true,
+        notes = "Per-document manifests and Markdown/image payloads. Back up the entire ai-inbox directory while KOReader is closed; ordinary chat JSON backup does not include it.",
+    },
+    {
+        id = "legacy_question_inbox", label = "Legacy question test inbox",
+        location = "settings_dir", ref = "koassistant_question_inbox.json",
+        category = "conversations", backup = false, legacy = true,
+        reset_in = {}, uninstall = false,
+        notes = "Old test journal left untouched; never imported into ai-inbox.",
+    },
+    {
+        id = "question_inbox_temp", label = "Legacy question journal temporary write",
+        location = "settings_dir", ref = "koassistant_question_inbox.json.tmp",
+        category = "internal", backup = false, legacy = true,
+        reset_in = {}, uninstall = false,
+    },
+    {
+        id = "question_region_temp", label = "Temporary region capture",
+        location = "settings_dir", ref = "koassistant_region.tmp.png",
+        category = "internal", backup = false,
+        reset_in = { "wipe_all" }, uninstall = true,
+        notes = "Removed before and after every encode; never reused after failure.",
+    },
+
     --========================= Global keys (G_reader_settings) ================
     {
         id = "chat_index", label = "Chat index",

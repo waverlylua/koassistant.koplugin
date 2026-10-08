@@ -68,6 +68,50 @@ TestRunner:test("OpenAI Subscription advertises web search support", function()
     TestRunner:assertTrue(ModelConstraints.supportsWebSearch("openai_codex", "gpt-5.6-terra"), "web search gate")
 end)
 
+TestRunner:test("subscription image history uses Responses parts without mutating the saved source", function()
+    local Vision = require("koassistant_question_vision")
+    local image_message = Vision.message("openai_codex", "Explain the equation", { data="UE5H", mime_type="image/png" })
+    local history = {image_message, {role="assistant",content="Saved answer"}, {role="user",content="Explain the symbol"}}
+    local body = Handler:buildRequestBody(history, config()).body
+    TestRunner:assertEqual(body.input[1].content[1].type, "input_text")
+    TestRunner:assertEqual(body.input[1].content[1].text, "Explain the equation")
+    TestRunner:assertEqual(body.input[1].content[2].type, "input_image")
+    TestRunner:assertEqual(body.input[1].content[2].image_url, "data:image/png;base64,UE5H")
+    TestRunner:assertEqual(body.input[1].content[2].detail, "high")
+    TestRunner:assertEqual(body.input[2].role, "assistant")
+    TestRunner:assertEqual(body.input[2].content, "Saved answer")
+    TestRunner:assertEqual(body.input[3].content, "Explain the symbol")
+    TestRunner:assertEqual(#body.input[1].content, 2, "source image included only once")
+    TestRunner:assertEqual(image_message.content[1].type, "text", "snapshot stays in saved message format")
+    TestRunner:assertEqual(image_message.content[2].image_url.url, "data:image/png;base64,UE5H")
+    body.input[1].content[1].text = "changed on wire"
+    TestRunner:assertEqual(image_message.content[1].text, "Explain the equation")
+end)
+
+TestRunner:test("native Responses parts and replay items remain usable with subscription", function()
+    local history = {{role="user",content={
+        {type="input_text",text="Native question"},
+        {type="input_image",image_url="data:image/png;base64,UE5H",detail="high"},
+    }}, {_responses_items={{type="reasoning",id="reasoning_1",encrypted_content="test-ciphertext"}}}}
+    local body = Handler:buildRequestBody(history, config()).body
+    TestRunner:assertEqual(body.input[1].content[1].type, "input_text")
+    TestRunner:assertEqual(body.input[1].content[2].image_url, "data:image/png;base64,UE5H")
+    TestRunner:assertEqual(body.input[2].type, "reasoning")
+    TestRunner:assertEqual(body.input[2].encrypted_content, "test-ciphertext")
+end)
+
+TestRunner:test("public Responses adapts vision while direct Chat Completions keeps its own wire", function()
+    local OpenAI = require("koassistant_api.openai")
+    local message = require("koassistant_question_vision").message("openai", "Question", {data="UE5H"})
+    local responses = OpenAI:buildRequestBody({message}, config({model="gpt-5.4",enable_web_search=true})).body
+    TestRunner:assertEqual(responses.input[1].content[1].type, "input_text")
+    TestRunner:assertEqual(responses.input[1].content[2].type, "input_image")
+    local chat = OpenAI:buildRequestBody({message}, config({model="gpt-4o-mini"})).body
+    TestRunner:assertEqual(chat.messages[#chat.messages].content[1].type, "text")
+    TestRunner:assertEqual(chat.messages[#chat.messages].content[2].type, "image_url")
+    TestRunner:assertEqual(chat.messages[#chat.messages].content[2].image_url.detail, "high")
+end)
+
 TestRunner:test("web-search effort maps to Codex Responses search context", function()
     local light = config({
         enable_web_search = true,

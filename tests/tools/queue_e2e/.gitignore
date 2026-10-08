@@ -1,0 +1,13 @@
+/downloads/
+/lib/
+/bin/
+/share/
+/logs/
+/screenshots/
+/evidence/
+/package-runtime/
+/*-home*/
+/home/
+/provider_plan.json
+/process-plan.json
+/__pycache__/

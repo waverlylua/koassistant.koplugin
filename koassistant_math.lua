@@ -55,7 +55,9 @@ local SYMBOLS = {
     -- relations
     leq = "≤", le = "≤", geq = "≥", ge = "≥", neq = "≠", ne = "≠", approx = "≈",
     equiv = "≡", sim = "∼", simeq = "≃", cong = "≅", propto = "∝", ll = "≪", gg = "≫",
-    prec = "≺", succ = "≻", perp = "⊥", parallel = "∥", mid = "∣", nmid = "∤",
+    prec = "≺", succ = "≻", preceq = "⪯", succeq = "⪰",
+    preccurlyeq = "≼", succcurlyeq = "≽", nprec = "⊀", nsucc = "⊁",
+    npreceq = "⋠", nsucceq = "⋡", perp = "⊥", parallel = "∥", mid = "∣", nmid = "∤",
     doteq = "≐", asymp = "≍", models = "⊨", vdash = "⊢", dashv = "⊣",
     -- arrows
     to = "→", rightarrow = "→", leftarrow = "←", leftrightarrow = "↔",
@@ -69,11 +71,11 @@ local SYMBOLS = {
     wedge = "∧", lor = "∨", vee = "∨", therefore = "∴", because = "∵",
     -- misc
     infty = "∞", partial = "∂", nabla = "∇", hbar = "ℏ", ell = "ℓ", Re = "ℜ", Im = "ℑ",
-    aleph = "ℵ", prime = "′", degree = "°", angle = "∠", triangle = "△", square = "□",
+    aleph = "ℵ", prime = "′", dagger = "†", ddagger = "‡", degree = "°", angle = "∠", triangle = "△", square = "□",
     ldots = "…", dots = "…", cdots = "⋯", vdots = "⋮", ddots = "⋱", dotsc = "…",
     dotsb = "⋯", langle = "⟨", rangle = "⟩", lfloor = "⌊", rfloor = "⌋", lceil = "⌈",
     rceil = "⌉", lvert = "|", rvert = "|", lVert = "‖", rVert = "‖", vert = "|",
-    Vert = "‖", backslash = "\\", top = "⊤", bot = "⊥", checkmark = "✓", surd = "√",
+    Vert = "‖", lparen = "(", rparen = ")", lbrack = "&#91;", rbrack = "&#93;", backslash = "\\", top = "⊤", bot = "⊥", checkmark = "✓", surd = "√",
     -- big operators (limits attach as sub/sup)
     sum = "∑", prod = "∏", coprod = "∐", int = "∫", iint = "∬", iiint = "∭",
     oint = "∮", bigcup = "⋃", bigcap = "⋂", bigoplus = "⨁", bigotimes = "⨂",
@@ -149,7 +151,7 @@ local DROP = {
     displaystyle = true, textstyle = true, scriptstyle = true, scriptscriptstyle = true,
     left = true, right = true, big = true, Big = true, bigg = true, Bigg = true, bigl = true,
     bigr = true, Bigl = true, Bigr = true, biggl = true, biggr = true, Biggl = true,
-    Biggr = true, nolimits = true, limits = true, notag = true, nonumber = true,
+    Biggr = true, bigm = true, Bigm = true, biggm = true, Biggm = true, nolimits = true, limits = true, notag = true, nonumber = true,
     small = true, large = true, Large = true, tiny = true, rm = true, it = true, bf = true,
     cal = true, mathstrut = true, strut = true, allowbreak = true,
 }
@@ -570,7 +572,8 @@ local function looksLikeMath(body)
     return body:match("^[%a(%-]") ~= nil
 end
 
-local function convertSegment(seg)
+local function convertSegment(seg, render_formula)
+    render_formula = render_formula or M.renderMath
     -- protect inline code
     local codes, n = {}, 0
     seg = seg:gsub("(`+)(.-)%1", function(ticks, body)
@@ -580,21 +583,21 @@ local function convertSegment(seg)
     end)
     -- display: $$...$$ (may span lines)
     seg = seg:gsub("%$%$(.-)%$%$", function(body)
-        return wrapDisplay(M.renderMath(body, true))
+        return wrapDisplay(render_formula(body, true))
     end)
     -- display: \[...\]
     seg = seg:gsub("\\%[(.-)\\%]", function(body)
-        return wrapDisplay(M.renderMath(body, true))
+        return wrapDisplay(render_formula(body, true))
     end)
     -- inline: \(...\)
     seg = seg:gsub("\\%((.-)\\%)", function(body)
-        return M.renderMath(body, false)
+        return render_formula(body, false)
     end)
     -- inline: $...$ on one line, non-space next to both delimiters
     seg = seg:gsub("%$(%S[^%$\n]-)%$", function(body)
         if body:match("%s$") then return nil end
         if not looksLikeMath(body) then return nil end
-        return M.renderMath(body, false)
+        return render_formula(body, false)
     end)
     -- restore inline code
     seg = seg:gsub("\1KOACODE(%d+)\1", function(k) return codes[tonumber(k)] end)
@@ -612,7 +615,7 @@ end
 -- Code fences (```) and inline code are left untouched.
 -- @param text string markdown
 -- @return string markdown with math spans replaced by inline HTML
-function M.render(text)
+function M.render(text, render_formula)
     if not text or not M.hasMath(text) then return text end
     local out, buf = {}, {}
     local in_fence = false
@@ -620,7 +623,7 @@ function M.render(text)
         if line:match("^%s*```") then
             if #buf > 0 then
                 local seg = table.concat(buf, "\n")
-                out[#out + 1] = in_fence and seg or convertSegment(seg)
+                out[#out + 1] = in_fence and seg or convertSegment(seg, render_formula)
                 buf = {}
             end
             in_fence = not in_fence
@@ -631,12 +634,24 @@ function M.render(text)
     end
     if #buf > 0 then
         local rest = table.concat(buf, "\n")
-        out[#out + 1] = in_fence and rest or convertSegment(rest)
+        out[#out + 1] = in_fence and rest or convertSegment(rest, render_formula)
     end
     local result = table.concat(out, "\n")
     -- the split appended one trailing "\n"; keep the original ending
     if not text:match("\n$") then result = result:gsub("\n$", "") end
     return result
 end
+
+-- Shared lexical data for the strict two-dimensional typesetter. The legacy
+-- HTML renderer remains available to old callers, but the viewer uses the new
+-- offline renderer and never silently flattens unsupported expressions.
+M.symbols = {}
+for k, v in pairs(GREEK) do M.symbols[k] = v end
+for k, v in pairs(SYMBOLS) do
+    M.symbols[k] = v:gsub("&amp;", "&"):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&#95;", "_"):gsub("&#91;", "["):gsub("&#93;", "]")
+end
+M.functions = FUNCTIONS
+M.blackboard = BLACKBOARD
+M.calligraphic = CALLIGRAPHIC
 
 return M

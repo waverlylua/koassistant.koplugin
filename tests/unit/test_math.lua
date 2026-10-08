@@ -120,6 +120,11 @@ T:test("left/right dropped, delimiters kept, \\right. vanishes", function()
     eq(RM([[\left. x \right|_0^1]]), "<i>x</i> |<sub>0</sub><sup>1</sup>")
 end)
 
+T:test("linear algebra symbols also survive the legacy readable-HTML path", function()
+    eq(RM([[A\succeq0,\quad B\preceq C^\dagger]]), "<i>A</i>⪰0, <i>B</i>⪯ <i>C</i><sup>†</sup>")
+    eq(RM([[\bigl\lbrack x\bigm|y\bigr\rbrack]]), "&#91; <i>x</i>|<i>y</i>&#93;")
+end)
+
 T:test("environments: cases, pmatrix, bmatrix, aligned", function()
     eq(RM([[\begin{cases} x & \text{if } x \geq 0 \\ -x & \text{otherwise} \end{cases}]]),
        "{ <i>x</i> if <i>x</i> ≥ 0; −<i>x</i> otherwise }")

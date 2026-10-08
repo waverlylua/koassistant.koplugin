@@ -40,3 +40,12 @@ scripts/exports/
 # Python bytecode cache
 scripts/__pycache__/
 /tests/bench/
+
+# Local credentials and private runtime data must never be published.
+/.env
+/.env.*
+/koassistant_settings.lua
+/ai-inbox/
+/koassistant_backups/
+/koassistant_exports/
+/koassistant_images/

@@ -211,6 +211,10 @@ function AskGPT:init()
   self.action_service = ActionService:new(self.settings)
   self.action_service:initialize()
 
+  -- Session-owned queue survives reader navigation and dialog dismissal.
+  require("koassistant_question_runtime").get(self)
+  require("koassistant_question_runtime").installFooter(self.ui)
+
   -- Track 37: move per-book plugin data out of KOReader's metadata.lua
   -- (one-shot, runs before any read; see _runBookStoreMigration)
   self:_runBookStoreMigration()
@@ -274,6 +278,21 @@ function AskGPT:init()
   -- on every onShowHighlightMenu), so toggle/ordering changes apply the next time
   -- the menu opens — no restart or book reopen needed.
   if self.ui and self.ui.highlight then
+    self.ui.highlight:addToHighlightDialog("koassistant_queue_question", function(highlight)
+      return {
+        text = _("Queue question"),
+        callback = function()
+          local captured, err = require("koassistant_question_payload").capture(self.ui, highlight.selected_text)
+          highlight:onClose()
+          if not captured then
+            UIManager:show(InfoMessage:new{ text = err })
+            return
+          end
+          require("koassistant_question_ui").showChooser(self, captured)
+        end,
+      }
+    end)
+
     -- Main KOAssistant button (controlled separately from quick actions)
     self.ui.highlight:addToHighlightDialog("koassistant_dialog", function(reader_highlight_instance)
         return {
@@ -393,6 +412,7 @@ function AskGPT:init()
       if not ok_m then logger.warn("KOAssistant: book store straggler check failed:", err_m) end
     end
     self:registerToMainMenu()
+    require("koassistant_question_runtime").installFooter(self.ui)
     -- Sync highlight bypass (needs ui.highlight to be available)
     self:syncHighlightBypass()
     -- Round 5 (per-book intercept): the dict wrapper's install gate consults
@@ -1383,6 +1403,14 @@ function AskGPT:onDispatcherRegisterActions()
     event = "KOAssistantChatHistory",
     title = _("KOAssistant: Chat History"),
     general = true
+  })
+
+  -- Available for user-assigned gestures; never claim a default corner tap.
+  Dispatcher:registerAction("koassistant_question_inbox", {
+    category = "none",
+    event = "KOAssistantQuestionInbox",
+    title = _("KOAssistant: AI answer inbox"),
+    general = true,
   })
 
   -- Register continue last saved chat action
@@ -6439,7 +6467,30 @@ function AskGPT:addToMainMenu(menu_items)
     sorting_hint = "tools",
     sub_item_table_func = function()
       self:ensureInitialized()
-      return SettingsManager:generateMenuFromSchema(self, SettingsSchema)
+      local items = SettingsManager:generateMenuFromSchema(self, SettingsSchema)
+      table.insert(items, 1, {
+        text = _("AI answer inbox") .. "  " .. require("koassistant_question_runtime").badge(),
+        callback = function() self:onKOAssistantQuestionInbox() end,
+        separator = true,
+      })
+      -- QUEUE_REGION_BEGIN
+      table.insert(items, 2, {
+        text = _("Queue PDF region question…"),
+        enabled = self.ui and self.ui.document and self.ui.document.info.has_pages,
+        callback = function()
+          UIManager:nextTick(function() require("koassistant_question_region").show(self) end)
+        end,
+      })
+      local page = self.ui and self.ui.view and self.ui.view.state and self.ui.view.state.page
+      table.insert(items, 3, {
+        text = page and T(_("Queue whole PDF page %1…"), page) or _("Queue whole PDF page…"),
+        enabled = self.ui and self.ui.document and self.ui.document.info.has_pages,
+        callback = function()
+          UIManager:nextTick(function() require("koassistant_question_page").show(self) end)
+        end,
+      })
+      -- QUEUE_REGION_END
+      return items
     end,
   }
 end
@@ -6895,6 +6946,15 @@ end
 function AskGPT:onKOAssistantChatHistory()
   -- Use the same implementation as the settings menu
   self:showChatHistory()
+  return true
+end
+
+function AskGPT:onKOAssistantQuestionInbox()
+  -- The session inbox works in both reader and file browser, without a book
+  -- or network connection. Ignore events before plugin initialization.
+  if not self.ui or not self.settings then return true end
+  self:ensureInitialized()
+  require("koassistant_question_ui").showInbox(self)
   return true
 end
 
@@ -15988,6 +16048,7 @@ end
 --- lost) and park the build for onNetworkConnected to pick the same step back
 --- up. Never returns true: Suspend is a broadcast every module must see.
 function AskGPT:onSuspend()
+  require("koassistant_question_runtime").get(self):suspend()
   if not Device:hasWifiManager() then return end
   -- A reconnect fire still in its settle delay would land in this sleep's
   -- dead radio; its flags stay set for the next reconnect
@@ -16017,6 +16078,11 @@ function AskGPT:onSuspend()
   end
 end
 
+-- Queued-but-never-sent jobs can continue after waking; interrupted jobs require Retry.
+function AskGPT:onResume()
+  require("koassistant_question_runtime").get(self):resume()
+end
+
 --- Wi-Fi is back: a checkpoint build the sleep parked (onSuspend) fires its
 --- step again, and a background update the reader asked for runs again.
 --- Deferred a few seconds (the connection is announced before it is reliably
@@ -16024,6 +16090,7 @@ end
 --- with the radio on, so a sleep inside the delay keeps it for the next
 --- reconnect. Never returns true (broadcast).
 function AskGPT:onNetworkConnected()
+  require("koassistant_question_runtime").get(self):resume()
   local file = self.ui and self.ui.document and self.ui.document.file
   if not file then return end
   local XrayAuto = require("koassistant_xray_auto")
@@ -22971,6 +23038,7 @@ function AskGPT:_shortcutActionList()
     { id = "koassistant_quick_actions", title = _("Quick Actions"), fm = false, reader = true },
     { id = "koassistant_ai_settings", title = _("Quick Settings"), fm = true, reader = true },
     { id = "koassistant_chat_history", title = _("Chat History"), fm = true, reader = true },
+    { id = "koassistant_question_inbox", title = _("AI answer inbox"), fm = true, reader = true },
     { id = "koassistant_continue_last_opened", title = _("Continue Last Chat"), fm = true, reader = true },
     { id = "koassistant_continue_last", title = _("Continue Last Saved Chat"), fm = true, reader = true },
     { id = "koassistant_settings", title = _("Settings"), fm = true, reader = true },
